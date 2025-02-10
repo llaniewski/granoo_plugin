@@ -73,7 +73,8 @@ PlugIn_RemoteForceInterface::run() {
             double r = sph.get_radius();
             const Geom::Point& x = sph.get_position();
             const Geom::Vector& omega = sph.get_angular_velocity();
-            const Geom::Vector& f = sph.force();
+            Geom::Vector& f = sph.force();
+            Geom::Vector& torque = sph.torque();
             int minper[3], maxper[3], d[3];
             size_t offset = 0;
             for (int worker = 0; worker < RFI->Workers(); worker++) {
