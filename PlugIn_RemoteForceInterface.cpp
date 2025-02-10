@@ -11,7 +11,7 @@ extern MPMDHelper MPMD;
 REGISTER_GRANOO_PLUGIN(PlugIn_RemoteForceInterface);
 
 PlugIn_RemoteForceInterface::PlugIn_RemoteForceInterface()
-  : Core::PlugInInterface<PlugIn_RemoteForceInterface>(), Core::NeedSetOf<Physic::Node>(false) {
+  : Core::PlugInInterface<PlugIn_RemoteForceInterface>(), Core::NeedSetOf<GranOO3::DEM::DiscreteElement>(false) {
 }
 
 PlugIn_RemoteForceInterface::~PlugIn_RemoteForceInterface() {
@@ -20,12 +20,12 @@ PlugIn_RemoteForceInterface::~PlugIn_RemoteForceInterface() {
 void
 PlugIn_RemoteForceInterface::parse_xml() {
   Core::XmlParser& parser = Core::XmlParser::get();
-  std::string calculator_name;
   parser.read_attribute(Attr::GRANOO_REQUIRED, "calculator", calculator_name);
 }
 
 void
 PlugIn_RemoteForceInterface::init() {
+    int ret;
     RFI.name = "GRANOO";
     MPMDIntercomm inter = MPMD[calculator_name];
     if (inter) {
@@ -35,57 +35,57 @@ PlugIn_RemoteForceInterface::init() {
         fprintf(stderr, "Didn't find TCLB in MPMD\n");
         // TODO:ERROR;
     }
-    
+    first_print = true;
+    wsize.resize(RFI.Workers());
+    windex.resize(RFI.Workers());
+    domain_length[0] = 1.0;
+    domain_length[1] = 1.0;
+    domain_length[2] = 1.0;
+    domain_periodicity[0] = false;
+    domain_periodicity[1] = false;
+    domain_periodicity[2] = false;
 }
 
 void
 PlugIn_RemoteForceInterface::run() {
-  auto& set = get_setof();
-  Geom::Vector _g(0,0,0);
-  for (auto de : set) {
-    de->force() += de->get_mass()*_g;
-    auto& sph = de->get<GranOO3::DEM::DiscreteElement>();
-    double r = sph.get_radius();
-    Geom::Point p = sph.get_position();
-  }
+    if (!RFI.Active()) return;
 
-
-
-    
-    if (!RFI->Active()) return;
+    auto& set = get_setof();
 
     if (first_print) {
         printf("GRANOO: RFI.Rot:%s\n",
-            RFI->Rot() ? "true" : "false"
+            RFI.Rot() ? "true" : "false"
         );
         first_print = false;
     }
 
     for (int phase=0; phase<3; phase++) {
         if (phase == 0) {
-            for (int i = 0; i < RFI->Workers(); i++) wsize[i] = 0;
+            for (int i = 0; i < RFI.Workers(); i++) wsize[i] = 0;
         } else {
-            for (int i = 0; i < RFI->Workers(); i++) windex[i] = 0;
+            for (int i = 0; i < RFI.Workers(); i++) windex[i] = 0;
         }
-
         for (auto de : set) {
-            auto& sph = de->get<GranOO3::DEM::DiscreteElement>();
+            auto& sph = *de;
+            
             double r = sph.get_radius();
-            const Geom::Point& x = sph.get_position();
+            const Geom::Vector& pos = sph.get_position();
+            const Geom::Vector& v = sph.get_linear_velocity();
             const Geom::Vector& omega = sph.get_angular_velocity();
             Geom::Vector& f = sph.force();
             Geom::Vector& torque = sph.torque();
             int minper[3], maxper[3], d[3];
             size_t offset = 0;
-            for (int worker = 0; worker < RFI->Workers(); worker++) {
+            for (int worker = 0; worker < RFI.Workers(); worker++) {
+                double x[3] = {pos.x(), pos.y(), pos.z()};
+                
                 for (int j=0; j<3; j++) {
-                  
                     double prd = domain_length[j];
                     double lower = 0;
                     double upper = domain_length[j];
-                    if (RFI->WorkerBox(worker).declared) {
-                        lower = RFI->WorkerBox(worker).lower[j];
-                        upper = RFI->WorkerBox(worker).upper[j];
+                    if (RFI.WorkerBox(worker).declared) {
+                        lower = RFI.WorkerBox(worker).lower[j];
+                        upper = RFI.WorkerBox(worker).upper[j];
                     }
                     if (domain_periodicity[j]) {
                         maxper[j] = floor((upper - x[j] + r)/prd);
@@ -115,35 +115,25 @@ PlugIn_RemoteForceInterface::run() {
                                 size_t i = offset + windex[worker];
                                 if (phase == 1) {
                                     //printf("particle %ld sent %d at index %ld\n", k, worker, i);
-                                    RFI->setData(i, RFI_DATA_R, r);
-                                    RFI->setData(i, RFI_DATA_POS + 0, px[0]);
-                                    RFI->setData(i, RFI_DATA_POS + 1, px[1]);
-                                    RFI->setData(i, RFI_DATA_POS + 2, px[2]);
-                                    RFI->setData(i, RFI_DATA_VEL + 0, v[0]);
-                                    RFI->setData(i, RFI_DATA_VEL + 1, v[1]);
-                                    RFI->setData(i, RFI_DATA_VEL + 2, v[2]);
-                                    if (RFI->Rot()) {
-                                        if (omega) {
-                                            RFI->setData(i, RFI_DATA_ANGVEL + 0, omega[0]);
-                                            RFI->setData(i, RFI_DATA_ANGVEL + 1, omega[1]);
-                                            RFI->setData(i, RFI_DATA_ANGVEL + 2, omega[2]);
-                                        } else {
-                                            RFI->setData(i, RFI_DATA_ANGVEL + 0, 0.0);
-                                            RFI->setData(i, RFI_DATA_ANGVEL + 1, 0.0);
-                                            RFI->setData(i, RFI_DATA_ANGVEL + 2, 0.0);
-                                        }
+                                    RFI.setData(i, RFI_DATA_R, r);
+                                    RFI.setData(i, RFI_DATA_POS + 0, px[0]);
+                                    RFI.setData(i, RFI_DATA_POS + 1, px[1]);
+                                    RFI.setData(i, RFI_DATA_POS + 2, px[2]);
+                                    RFI.setData(i, RFI_DATA_VEL + 0, v.x());
+                                    RFI.setData(i, RFI_DATA_VEL + 1, v.y());
+                                    RFI.setData(i, RFI_DATA_VEL + 2, v.z());
+                                    if (RFI.Rot()) {
+                                        RFI.setData(i, RFI_DATA_ANGVEL + 0, omega.x());
+                                        RFI.setData(i, RFI_DATA_ANGVEL + 1, omega.y());
+                                        RFI.setData(i, RFI_DATA_ANGVEL + 2, omega.z());
                                     }
                                 } else {
-                                    if (f) {
-                                        f[0] += RFI->getData(i, RFI_DATA_FORCE + 0);
-                                        f[1] += RFI->getData(i, RFI_DATA_FORCE + 1);
-                                        f[2] += RFI->getData(i, RFI_DATA_FORCE + 2);
-                                    }
-                                    if (torque) {
-                                        torque[0] += RFI->getData(i, RFI_DATA_MOMENT + 0);
-                                        torque[1] += RFI->getData(i, RFI_DATA_MOMENT + 1);
-                                        torque[2] += RFI->getData(i, RFI_DATA_MOMENT + 2);
-                                    }
+                                    f.x() += RFI.getData(i, RFI_DATA_FORCE + 0);
+                                    f.y() += RFI.getData(i, RFI_DATA_FORCE + 1);
+                                    f.z() += RFI.getData(i, RFI_DATA_FORCE + 2);
+                                    torque.x() += RFI.getData(i, RFI_DATA_MOMENT + 0);
+                                    torque.y() += RFI.getData(i, RFI_DATA_MOMENT + 1);
+                                    torque.z() += RFI.getData(i, RFI_DATA_MOMENT + 2);
                                 }
                                 windex[worker]++;
                             }
@@ -154,14 +144,14 @@ PlugIn_RemoteForceInterface::run() {
             }
         }
         if (phase == 0) {
-            for (int worker = 0; worker < RFI->Workers(); worker++) RFI->Size(worker) = wsize[worker];
-            //printf("sizes:"); for (int worker = 0; worker < RFI->Workers(); worker++) printf(" %ld", (size_t) wsize[worker]); printf("\n");
-            RFI->SendSizes();
-            RFI->Alloc();
+            for (int worker = 0; worker < RFI.Workers(); worker++) RFI.Size(worker) = wsize[worker];
+            //printf("sizes:"); for (int worker = 0; worker < RFI.Workers(); worker++) printf(" %ld", (size_t) wsize[worker]); printf("\n");
+            RFI.SendSizes();
+            RFI.Alloc();
         } else if (phase == 1) {
-            //printf("indexes:"); for (int worker = 0; worker < RFI->Workers(); worker++) printf(" %ld", (size_t) windex[worker]); printf("\n");
-            RFI->SendParticles();
-            RFI->SendForces();
+            //printf("indexes:"); for (int worker = 0; worker < RFI.Workers(); worker++) printf(" %ld", (size_t) windex[worker]); printf("\n");
+            RFI.SendParticles();
+            RFI.SendForces();
         } else {
         }
     }
