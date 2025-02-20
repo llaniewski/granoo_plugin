@@ -20,6 +20,9 @@ class PlugIn_RemoteForceInterface : public Core::PlugInInterface<PlugIn_RemoteFo
   std::string calculator_name;
   bool domain_periodicity[3];
   double domain_length[3];
+  int subiter, subiters;
+  std::vector<Geom::Vector> forces;
+  std::vector<Geom::Vector> torques;
 public:
   DECLARE_CUSTOM_GRANOO_PLUGIN(RemoteForceInterface);
   ~PlugIn_RemoteForceInterface();

@@ -21,6 +21,11 @@ void
 PlugIn_RemoteForceInterface::parse_xml() {
   Core::XmlParser& parser = Core::XmlParser::get();
   parser.read_attribute(Attr::GRANOO_REQUIRED, "calculator", calculator_name);
+  subiters = 1;
+  parser.read_attribute(Attr::GRANOO_OPTIONAL, "subiterations", subiters);
+  if (subiters < 1) {
+    // TODO:ERROR
+  }
 }
 
 void
@@ -44,6 +49,7 @@ PlugIn_RemoteForceInterface::init() {
     domain_periodicity[0] = false;
     domain_periodicity[1] = false;
     domain_periodicity[2] = false;
+    subiter = 0;
 }
 
 void
@@ -59,102 +65,133 @@ PlugIn_RemoteForceInterface::run() {
         first_print = false;
     }
 
-    for (int phase=0; phase<3; phase++) {
-        if (phase == 0) {
-            for (int i = 0; i < RFI.Workers(); i++) wsize[i] = 0;
-        } else {
-            for (int i = 0; i < RFI.Workers(); i++) windex[i] = 0;
+    if (subiter <= 0) {
+        if (subiters > 1) {
+            forces.resize(set.size());
+            std::fill(forces.begin(), forces.end(),Geom::Vector(0,0,0));
+            torques.resize(set.size());
+            std::fill(torques.begin(), torques.end(),Geom::Vector(0,0,0));
         }
-        for (auto de : set) {
-            auto& sph = *de;
-            
-            double r = sph.get_radius();
-            const Geom::Vector& pos = sph.get_position();
-            const Geom::Vector& v = sph.get_linear_velocity();
-            const Geom::Vector& omega = sph.get_angular_velocity();
-            Geom::Vector& f = sph.force();
-            Geom::Vector& torque = sph.torque();
-            int minper[3], maxper[3], d[3];
-            size_t offset = 0;
-            for (int worker = 0; worker < RFI.Workers(); worker++) {
-                double x[3] = {pos.x(), pos.y(), pos.z()};
-                
-                for (int j=0; j<3; j++) {
-                    double prd = domain_length[j];
-                    double lower = 0;
-                    double upper = domain_length[j];
-                    if (RFI.WorkerBox(worker).declared) {
-                        lower = RFI.WorkerBox(worker).lower[j];
-                        upper = RFI.WorkerBox(worker).upper[j];
-                    }
-                    if (domain_periodicity[j]) {
-                        maxper[j] = floor((upper - x[j] + r)/prd);
-                        minper[j] = ceil((lower - x[j] - r)/prd);
-                    } else {
-                        if ((x[j] + r >= lower) && (x[j] - r <= upper)) {
-                            minper[j] = 0;
-                            maxper[j] = 0;
-                        } else {
-                            minper[j] = 0;
-                            maxper[j] = -1;  // no balls
-                        }
-                    }
-                    //       printf("particle %ld dimenstion %d in %d worker interval [%lg %lg] and periodicity %lg: %lg copied %d:%d\n", k, j, worker, lower, upper, prd, x[j], minper[j], maxper[j]);
-                }
+        subiter = subiters;
 
-                int copies = (maxper[0] - minper[0] + 1)*(maxper[1] - minper[1] + 1)*(maxper[2] - minper[2] + 1);
-                //     if (copies > 1) printf("particle %ld is copied %d times (%d %d)x(%d %d)x(%d %d)\n", k, copies, minper[0], maxper[0], minper[1], maxper[1], minper[2], maxper[2]);
-                for (d[0] = minper[0]; d[0] <= maxper[0]; d[0]++) {
-                    for (d[1] = minper[1]; d[1] <= maxper[1]; d[1]++) {
-                        for (d[2] = minper[2]; d[2] <= maxper[2]; d[2]++) {
-                            double px[3];
-                            for (int j=0; j<3; j++) px[j] = x[j] + d[j]*domain_length[j];
-                            if (phase == 0) {
-                                wsize[worker]++;
+        for (int phase=0; phase<3; phase++) {
+            if (phase == 0) {
+                for (int i = 0; i < RFI.Workers(); i++) wsize[i] = 0;
+            } else {
+                for (int i = 0; i < RFI.Workers(); i++) windex[i] = 0;
+            }
+            size_t idx = 0;
+            for (auto de : set) {
+                auto& sph = *de;
+                double r = sph.get_radius();
+                const Geom::Vector& pos = sph.get_position();
+                const Geom::Vector& v = sph.get_linear_velocity();
+                const Geom::Vector& omega = sph.get_angular_velocity();
+                Geom::Vector& f = sph.force();
+                Geom::Vector& torque = sph.torque();
+                int minper[3], maxper[3], d[3];
+                size_t offset = 0;
+                for (int worker = 0; worker < RFI.Workers(); worker++) {
+                    double x[3] = {pos.x(), pos.y(), pos.z()};
+                    
+                    for (int j=0; j<3; j++) {
+                        double prd = domain_length[j];
+                        double lower = 0;
+                        double upper = domain_length[j];
+                        if (RFI.WorkerBox(worker).declared) {
+                            lower = RFI.WorkerBox(worker).lower[j];
+                            upper = RFI.WorkerBox(worker).upper[j];
+                        }
+                        if (domain_periodicity[j]) {
+                            maxper[j] = floor((upper - x[j] + r)/prd);
+                            minper[j] = ceil((lower - x[j] - r)/prd);
+                        } else {
+                            if ((x[j] + r >= lower) && (x[j] - r <= upper)) {
+                                minper[j] = 0;
+                                maxper[j] = 0;
                             } else {
-                                size_t i = offset + windex[worker];
-                                if (phase == 1) {
-                                    //printf("particle %ld sent %d at index %ld\n", k, worker, i);
-                                    RFI.setData(i, RFI_DATA_R, r);
-                                    RFI.setData(i, RFI_DATA_POS + 0, px[0]);
-                                    RFI.setData(i, RFI_DATA_POS + 1, px[1]);
-                                    RFI.setData(i, RFI_DATA_POS + 2, px[2]);
-                                    RFI.setData(i, RFI_DATA_VEL + 0, v.x());
-                                    RFI.setData(i, RFI_DATA_VEL + 1, v.y());
-                                    RFI.setData(i, RFI_DATA_VEL + 2, v.z());
-                                    if (RFI.Rot()) {
-                                        RFI.setData(i, RFI_DATA_ANGVEL + 0, omega.x());
-                                        RFI.setData(i, RFI_DATA_ANGVEL + 1, omega.y());
-                                        RFI.setData(i, RFI_DATA_ANGVEL + 2, omega.z());
-                                    }
+                                minper[j] = 0;
+                                maxper[j] = -1;  // no balls
+                            }
+                        }
+                        //       printf("particle %ld dimenstion %d in %d worker interval [%lg %lg] and periodicity %lg: %lg copied %d:%d\n", k, j, worker, lower, upper, prd, x[j], minper[j], maxper[j]);
+                    }
+
+                    int copies = (maxper[0] - minper[0] + 1)*(maxper[1] - minper[1] + 1)*(maxper[2] - minper[2] + 1);
+                    //     if (copies > 1) printf("particle %ld is copied %d times (%d %d)x(%d %d)x(%d %d)\n", k, copies, minper[0], maxper[0], minper[1], maxper[1], minper[2], maxper[2]);
+                    for (d[0] = minper[0]; d[0] <= maxper[0]; d[0]++) {
+                        for (d[1] = minper[1]; d[1] <= maxper[1]; d[1]++) {
+                            for (d[2] = minper[2]; d[2] <= maxper[2]; d[2]++) {
+                                double px[3];
+                                for (int j=0; j<3; j++) px[j] = x[j] + d[j]*domain_length[j];
+                                if (phase == 0) {
+                                    wsize[worker]++;
                                 } else {
-                                    f.x() += RFI.getData(i, RFI_DATA_FORCE + 0);
-                                    f.y() += RFI.getData(i, RFI_DATA_FORCE + 1);
-                                    f.z() += RFI.getData(i, RFI_DATA_FORCE + 2);
-                                    torque.x() += RFI.getData(i, RFI_DATA_MOMENT + 0);
-                                    torque.y() += RFI.getData(i, RFI_DATA_MOMENT + 1);
-                                    torque.z() += RFI.getData(i, RFI_DATA_MOMENT + 2);
+                                    size_t i = offset + windex[worker];
+                                    if (phase == 1) {
+                                        //printf("particle %ld sent %d at index %ld\n", k, worker, i);
+                                        RFI.setData(i, RFI_DATA_R, r);
+                                        RFI.setData(i, RFI_DATA_POS + 0, px[0]);
+                                        RFI.setData(i, RFI_DATA_POS + 1, px[1]);
+                                        RFI.setData(i, RFI_DATA_POS + 2, px[2]);
+                                        RFI.setData(i, RFI_DATA_VEL + 0, v.x());
+                                        RFI.setData(i, RFI_DATA_VEL + 1, v.y());
+                                        RFI.setData(i, RFI_DATA_VEL + 2, v.z());
+                                        if (RFI.Rot()) {
+                                            RFI.setData(i, RFI_DATA_ANGVEL + 0, omega.x());
+                                            RFI.setData(i, RFI_DATA_ANGVEL + 1, omega.y());
+                                            RFI.setData(i, RFI_DATA_ANGVEL + 2, omega.z());
+                                        }
+                                    } else {
+                                        Geom::Vector addforce{
+                                            RFI.getData(i, RFI_DATA_FORCE + 0),
+                                            RFI.getData(i, RFI_DATA_FORCE + 1),
+                                            RFI.getData(i, RFI_DATA_FORCE + 2)
+                                        };
+                                        Geom::Vector addtorque{
+                                            RFI.getData(i, RFI_DATA_MOMENT + 0),
+                                            RFI.getData(i, RFI_DATA_MOMENT + 1),
+                                            RFI.getData(i, RFI_DATA_MOMENT + 2)
+                                        };
+                                        f += addforce;
+                                        torque += addtorque;
+                                        if (subiters > 1) {
+                                            forces[idx] += addforce;
+                                            torques[idx] += addtorque;
+                                        }
+                                    }
+                                    windex[worker]++;
                                 }
-                                windex[worker]++;
                             }
                         }
                     }
+                    offset += wsize[worker];
                 }
-                offset += wsize[worker];
+                idx++;
+            }
+            if (phase == 0) {
+                for (int worker = 0; worker < RFI.Workers(); worker++) RFI.Size(worker) = wsize[worker];
+                //printf("sizes:"); for (int worker = 0; worker < RFI.Workers(); worker++) printf(" %ld", (size_t) wsize[worker]); printf("\n");
+                RFI.SendSizes();
+                RFI.Alloc();
+            } else if (phase == 1) {
+                //printf("indexes:"); for (int worker = 0; worker < RFI.Workers(); worker++) printf(" %ld", (size_t) windex[worker]); printf("\n");
+                RFI.SendParticles();
+                RFI.SendForces();
+            } else {
             }
         }
-        if (phase == 0) {
-            for (int worker = 0; worker < RFI.Workers(); worker++) RFI.Size(worker) = wsize[worker];
-            //printf("sizes:"); for (int worker = 0; worker < RFI.Workers(); worker++) printf(" %ld", (size_t) wsize[worker]); printf("\n");
-            RFI.SendSizes();
-            RFI.Alloc();
-        } else if (phase == 1) {
-            //printf("indexes:"); for (int worker = 0; worker < RFI.Workers(); worker++) printf(" %ld", (size_t) windex[worker]); printf("\n");
-            RFI.SendParticles();
-            RFI.SendForces();
-        } else {
+    } else {
+        if ((forces.size() != set.size()) || (torques.size() != set.size())) {
+            printf("Wrong sizes in RFI plugin\n");
+            exit(1);
+        }
+        size_t idx = 0;
+        for (auto de : set) {
+            de->force() += forces[idx];
+            de->torque() += torques[idx];
+            idx++;
         }
     }
-
-
+    subiter--;
 }
